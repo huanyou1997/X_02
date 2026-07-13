@@ -1,0 +1,65 @@
+name: BTC 每日日报（手动发布版）
+
+on:
+  schedule:
+    # UTC 00:35 = 北京时间 08:35 (UTC 日K刚收 35 分钟, 数据最新鲜)
+    # 想一天两报可再加一行, 例如 "35 12 * * *" (北京 20:35)
+    - cron: "35 0 * * *"
+  workflow_dispatch: {}   # 盘中想临时加一期: Actions 页点 Run workflow 即可
+
+# 只用 GitHub 内置令牌: 提交存档需要 contents 写权限, 开提醒需要 issues 写权限
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 安装依赖
+        run: pip install -r requirements.txt
+
+      - name: 生成日报文案
+        env:
+          SYMBOL: BTCUSDT
+          TZ_OFFSET: "8"
+          ARCHIVE_DIR: reports
+          WRITE_ISSUE: "1"
+          # COMPACT: "1"        # 需要单条速报时取消注释
+        run: python bot.py
+
+      - name: 存档进仓库 (reports/latest.txt + 按日期归档)
+        run: |
+          git config user.name "btc-report-bot"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add reports/
+          git commit -m "📋 日报存档 $(date -u '+%Y-%m-%d %H:%M UTC')" || echo "内容无变化, 跳过提交"
+          git push
+
+      - name: 开 Issue 提醒 (手机装 GitHub App 即可收到推送)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh label create "日报" --color FFD700 --description "每日盘面报告" 2>/dev/null || true
+          # 关掉旧一期, 保持 Issue 列表只有当天这条
+          for n in $(gh issue list --label "日报" --state open --json number --jq '.[].number'); do
+            gh issue close "$n" --comment "已被新一期日报替代" >/dev/null
+          done
+          gh issue create --label "日报" \
+            --title "$(cat issue_title.txt)" \
+            --body-file issue_body.md
+
+      - name: 备份构件
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: report-${{ github.run_id }}
+          path: last_report.txt
+          if-no-files-found: ignore
